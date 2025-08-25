@@ -161,7 +161,7 @@ def write_bed(motif_positions, path):
     """Write motif positions to a BED file."""
     with open(path, 'w') as bed:
         for pos in motif_positions:
-            bed.write(f"{pos['chrom']}\t{pos['start']}\t{pos['end']}\tGAGG\t0\t{pos['strand']}\n")
+            bed.write(f"{pos['chrom']}	{pos['start']}	{pos['end']}	GAGG	0	{pos['strand']}\n")
 
 
 def write_fasta(windows, path):
