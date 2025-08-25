@@ -3,8 +3,8 @@
 6mA motif analysis pipeline for Arabidopsis thaliana genomes.
 
 This script implements a self‑contained analysis pipeline for scanning a genome
-FASTA file for the consensus N6‑methyladenine (6mA) motif "GAGG" and its
-reverse complement "CCTC".  It extracts genomic windows around each
+FASTA file for a user‑defined N6‑methyladenine (6mA) consensus motif and its
+reverse complement.  It extracts genomic windows around each
 occurrence, summarises motif distributions and generates output files ready
 for downstream epigenetic analyses.
 
@@ -13,19 +13,20 @@ standard Python packages (pandas, numpy, matplotlib).  It does not rely
 on Biopython or other bioinformatics libraries, making it suitable for
 restricted environments.
 
-Key output files:
-  - GAGG_motif_positions.bed: BED format intervals for all motif sites.
-  - GAGG_windows.fasta: FASTA sequences surrounding motif sites.
+Key output files (where `<motif>` is the motif provided via `--motif`):
+  - `<motif>_motif_positions.bed`: BED format intervals for all motif sites.
+  - `<motif>_windows.fasta`: FASTA sequences surrounding motif sites.
   - motif_counts_by_chromosome.tsv: Tab‑delimited summary of motif counts per chromosome.
   - motif_position_frequency.npy: NumPy array of nucleotide frequencies across window positions.
   - motif_position_logo.png: Sequence logo visualising base frequencies across the motif window.
 
 Usage:
-  python 6ma_motif_analysis.py --fasta Col-CEN_v1.2.fasta --window 15 --outdir results
+  python 6ma_motif_analysis.py --fasta Col-CEN_v1.2.fasta --motif GAGG --flank 15 --outdir results
 
-This will scan the provided genome, extract 30 bp windows (15 bp upstream and
-downstream around the 4 bp motif) and write all outputs to the specified
-directory.
+This will scan the provided genome, extract windows sized 2×flank + len(motif)
+(for example 30 bp when using flank=15 and a 4 bp motif) and write all outputs to
+the specified directory.  You can specify any motif consisting of A/C/G/T
+characters; the reverse complement is automatically detected.
 
 Limitations:
   * The script scans a single genome FASTA file.  For comparative analyses
@@ -80,9 +81,25 @@ def parse_fasta(fasta_path):
             yield header, ''.join(seq_chunks).upper()
 
 
-def reverse_complement(seq):
-    """Return the reverse complement of a DNA sequence."""
-    complement = str.maketrans('ACGTN', 'TGCAN')
+def reverse_complement(seq: str) -> str:
+    """Return the reverse complement of a DNA sequence.
+
+    This function supports both upper‑ and lower‑case sequences.  The mapping
+    explicitly converts A→T, T→A, C→G and G→C while leaving any non‑ACGT
+    characters unchanged.  Lower‑case bases are mapped correspondingly.
+
+    Parameters
+    ----------
+    seq : str
+        DNA sequence.
+
+    Returns
+    -------
+    str
+        Reverse‑complemented sequence.
+    """
+    # Define translation table for both uppercase and lowercase bases
+    complement = str.maketrans('ATCGNatcgn', 'TAGCNtagcn')
     return seq.translate(complement)[::-1]
 
 
@@ -157,7 +174,7 @@ def extract_windows(sequence, positions, flank):
     return windows
 
 
-def write_bed(motif_positions, path):
+def write_bed(motif_positions, path, motif: str):
     """Write motif positions to a BED file."""
     with open(path, 'w') as bed:
         for pos in motif_positions:
@@ -169,6 +186,31 @@ def write_fasta(windows, path):
     with open(path, 'w') as fasta:
         for entry in windows:
             fasta.write(f">{entry['header']}\n{entry['seq']}\n")
+
+
+def write_bed_dynamic(motif_positions, path, motif: str) -> None:
+    """Write motif positions to a BED file using the provided motif name.
+
+    This helper function writes each motif occurrence as a BED line with the
+    motif included in the fourth column.  It avoids relying on any hard‑coded
+    motif names, making it safe to use for arbitrary motifs.
+
+    Parameters
+    ----------
+    motif_positions : list of dict
+        List of motif occurrences with keys 'chrom', 'start', 'end', 'strand'.
+    path : str
+        Path to the BED output file.
+    motif : str
+        Motif name to include in the fourth BED column (should be uppercase).
+    """
+    with open(path, 'w') as bed:
+        for pos in motif_positions:
+            bed_line = (
+                f"{pos['chrom']}\t{pos['start']}\t{pos['end']}\t{motif}"\
+                f"\t0\t{pos['strand']}\n"
+            )
+            bed.write(bed_line)
 
 
 def compute_nucleotide_frequencies(windows, flank, motif_len):
@@ -203,11 +245,16 @@ def compute_nucleotide_frequencies(windows, flank, motif_len):
         for i, base in enumerate(seq.upper()):
             if base in nuc_to_idx:
                 counts[i, nuc_to_idx[base]] += 1
-    frequencies = counts / counts.sum(axis=1, keepdims=True)
+    # Calculate row sums and avoid division by zero by replacing zeros with one
+    row_sums = counts.sum(axis=1, keepdims=True)
+    # Replace any zero counts with one to prevent division by zero; positions
+    # where no bases were counted will result in zero frequencies across all bases
+    row_sums[row_sums == 0] = 1
+    frequencies = counts / row_sums
     return frequencies
 
 
-def plot_sequence_logo(freq_matrix, path, motif_len, flank):
+def plot_sequence_logo(freq_matrix, path, motif_len, flank, motif: str) -> None:
     """Create a simple sequence logo plot from a nucleotide frequency matrix.
 
     The plot shows stacked bars at each position representing the frequencies of
@@ -240,7 +287,7 @@ def plot_sequence_logo(freq_matrix, path, motif_len, flank):
     plt.axvspan(motif_start - 0.5, motif_end - 0.5, color='gray', alpha=0.2)
     plt.xlabel('Position relative to motif')
     plt.ylabel('Base frequency')
-    plt.title('Nucleotide frequencies around 6mA motif GAGG')
+    plt.title(f'Nucleotide frequencies around 6mA motif {motif}')
     plt.legend(title='Base', bbox_to_anchor=(1.05, 1), loc='upper left')
     plt.tight_layout()
     plt.savefig(path)
@@ -255,10 +302,18 @@ def main():
     parser.add_argument('--outdir', default='results', help="Directory to write output files.")
     args = parser.parse_args()
 
+    # Validate inputs
+    if not os.path.isfile(args.fasta):
+        parser.error(f"FASTA file '{args.fasta}' does not exist.")
+    # Ensure motif consists only of A/C/G/T characters
+    args.motif = args.motif.upper()
+    if not set(args.motif).issubset(set('ACGT')):
+        parser.error("Motif must consist only of the characters A, C, G and T.")
+
     os.makedirs(args.outdir, exist_ok=True)
-    all_positions = []
-    windows = []
-    motif_len = len(args.motif)
+    all_positions: list = []
+    windows: list = []
+    motif_len: int = len(args.motif)
 
     # Scan each chromosome
     for header, seq in parse_fasta(args.fasta):
@@ -268,11 +323,14 @@ def main():
         all_positions.extend(positions)
         windows += extract_windows(seq, positions, args.flank)
 
+    # Determine output file names based on motif
+    motif_name = args.motif
     # Write BED file
-    bed_path = os.path.join(args.outdir, 'GAGG_motif_positions.bed')
-    write_bed(all_positions, bed_path)
-    # Write FASTA of windows
-    fasta_path = os.path.join(args.outdir, 'GAGG_windows.fasta')
+    bed_path = os.path.join(args.outdir, f'{motif_name}_motif_positions.bed')
+    # Use dynamic bed writer to avoid hard‑coded motif names
+    write_bed_dynamic(all_positions, bed_path, motif_name)
+    # Write FASTA of windows with dynamic motif name
+    fasta_path = os.path.join(args.outdir, f'{motif_name}_windows.fasta')
     write_fasta(windows, fasta_path)
     # Summarise counts per chromosome
     df = pd.DataFrame(all_positions)
@@ -283,10 +341,10 @@ def main():
     freq_matrix = compute_nucleotide_frequencies(windows, args.flank, motif_len)
     freq_path = os.path.join(args.outdir, 'motif_position_frequency.npy')
     np.save(freq_path, freq_matrix)
-    # Plot sequence logo
+    # Plot sequence logo with motif in title
     logo_path = os.path.join(args.outdir, 'motif_position_logo.png')
     if freq_matrix.size > 0:
-        plot_sequence_logo(freq_matrix, logo_path, motif_len, args.flank)
+        plot_sequence_logo(freq_matrix, logo_path, motif_len, args.flank, motif_name)
     print(f"Processed {len(df)} motif occurrences across {counts.shape[0]} chromosomes.")
     print(f"Results saved in directory: {args.outdir}")
 
