@@ -1,0 +1,27 @@
+# Python cache and environment files
+__pycache__/
+*.py[cod]
+*.pyd
+*.pyo
+
+# Environment directories
+.env
+.venv/
+venv/
+env/
+
+# IDE and editor directories
+.vscode/
+.idea/
+
+# OS metadata files
+.DS_Store
+
+# Ignore large data files generated during analysis (retain committed ones)
+*.bed
+*.tsv
+*.npy
+*.png
+*.fasta
+*.fa
+*.gz
